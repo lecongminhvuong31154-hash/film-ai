@@ -1,0 +1,5 @@
+fastapi>=0.115,<1
+uvicorn>=0.30,<1
+python-multipart>=0.0.12
+Pillow>=10.0,<13
+imageio-ffmpeg>=0.5,<1

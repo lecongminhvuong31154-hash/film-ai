@@ -1,0 +1,8 @@
+AI Film Factory — Web Studio v0.3
+Frontend: React offline bundle + source
+Backend: FastAPI, SQLite, FFmpeg
+Deployment: Docker + Render HTTPS with required password login
+Run locally: START_WINDOWS.bat (localhost only)
+GitHub public: code is public; online studio runtime is password protected
+Mode: MOCK, no paid AI generation
+See: README_DEPLOY_GITHUB.md

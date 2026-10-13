@@ -1,0 +1,23 @@
+# ALTERNATIVE BLUEPRINT: explicitly opt in to a PAID plan + persistent disk.
+# When ready, copy this file content to render.yaml before creating the Blueprint.
+services:
+  - type: web
+    name: ai-film-factory-studio
+    runtime: docker
+    plan: starter
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /api/health
+    autoDeployTrigger: commit
+    disk:
+      name: ai-film-factory-data
+      mountPath: /app/runtime_data
+      sizeGB: 5
+    envVars:
+      - key: APP_MODE
+        value: production
+      - key: APP_ACCESS_PASSWORD
+        sync: false
+      - key: APP_SESSION_SECRET
+        generateValue: true
+      - key: AI_FILM_DATA
+        value: /app/runtime_data

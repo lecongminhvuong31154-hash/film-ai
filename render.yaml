@@ -1,0 +1,21 @@
+# Public GitHub repository -> Render web app (password-protected runtime).
+# FREE PLAN IS FOR TESTING ONLY: SQLite and uploaded files WILL BE LOST
+# when this instance restarts or redeploys. For persistent production use
+# render.persistent.yaml and a paid Render disk.
+services:
+  - type: web
+    name: ai-film-factory-studio
+    runtime: docker
+    plan: free
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /api/health
+    autoDeployTrigger: commit
+    envVars:
+      - key: APP_MODE
+        value: production
+      - key: APP_ACCESS_PASSWORD
+        sync: false
+      - key: APP_SESSION_SECRET
+        generateValue: true
+      - key: AI_FILM_DATA
+        value: /app/runtime_data
