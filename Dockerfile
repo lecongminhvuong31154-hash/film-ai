@@ -7,7 +7,7 @@ COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
 COPY backend ./backend
 COPY frontend/dist ./frontend/dist
-COPY assets ./assets
+RUN mkdir -p /app/assets
 RUN mkdir -p /app/runtime_data
 EXPOSE 10000
 CMD ["sh", "-c", "exec uvicorn backend.main:app --host 0.0.0.0 --port ${PORT:-10000} --proxy-headers"]
