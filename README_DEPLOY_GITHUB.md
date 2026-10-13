@@ -1,57 +1,56 @@
-# AI Film Factory V0.3 — GitHub công khai + Studio yêu cầu mật khẩu
+# Hướng dẫn nâng cấp từ V0.3 lên V0.4 trên GitHub + Render
 
-> **Điểm cần hiểu rõ:** Public repository trên GitHub không có chế độ "chỉ người có link mới xem". Mã nguồn trong repo là **công khai**. Website do Render chạy có thể yêu cầu mật khẩu: mọi người có thể mở địa chỉ URL, nhưng chỉ người có **đường link VÀ mật khẩu** mới sử dụng được ứng dụng.
+## 1. Cập nhật GitHub
 
-## Mô hình triển khai
+1. **Sao lưu dữ liệu đang dùng:** nếu Render Free còn dữ liệu, tải `shots.json` và các file cần giữ trước khi deploy.
+2. Giải nén `AI_Film_Factory_V04_GitHub_Render_Ready.zip`.
+3. Vào GitHub repository `film-ai` → nhánh `main`.
+4. Tải **các thư mục và file bên trong ZIP** lên đúng thư mục gốc, ghi đè bản V0.3. Giữ nguyên tên `Dockerfile`, `render.yaml`, `backend/`, `frontend/`.
+5. Commit thay đổi. Có thể dùng GitHub Desktop hoặc `git add . && git commit -m "Upgrade AI Film Factory to V0.4" && git push`.
+6. GitHub không lưu thư mục rỗng: `Dockerfile` V0.4 đã sử dụng `RUN mkdir -p /app/assets` thay vì `COPY assets ./assets`, tránh lỗi triển khai V0.3.
 
-- **GitHub (Public):** giữ mã nguồn; không chứa dữ liệu phim, database, nhân vật riêng tư, API key hoặc mật khẩu.
-- **Render Web Service (HTTPS):** chạy đồng thời giao diện React đã đóng gói + Python FastAPI + SQLite + FFmpeg trên *một domain*, tránh lỗi CORS.
-- **Password gate:** đăng nhập bằng `APP_ACCESS_PASSWORD` do người quản lý thiết lập trong Render; cookie HttpOnly, Secure, SameSite Strict có thời hạn 12 giờ, URL /api và /media được bảo vệ.
-- **AI hiện ở MOCK MODE:** chỉ dùng ảnh tĩnh mô phỏng, tự chia shot và FFmpeg, không gọi AI có phí.
+**Không tải lên:** `.env`, mật khẩu, API key, `runtime_data/`, ảnh dự án riêng tư, `.venv/`, `node_modules/`, file SQLite.
 
-## Triển khai dễ nhất: Render Blueprint
+## 2. Triển khai Render
 
-1. Tại **repository GitHub hiện có**, chọn **Add file → Upload files** rồi tải các file/thư mục **bên trong ZIP V0.3 đã giải nén**, thay thế file cũ. Đảm bảo có `Dockerfile` và `render.yaml` ở **thư mục gốc repository**. Giữ repository **Public** nếu muốn code công khai.
-2. Mở [Render](https://dashboard.render.com/) và đăng nhập theo điều kiện của dịch vụ. Tạo **New → Blueprint** và kết nối repository GitHub. Nếu bạn không muốn cấp quyền Render truy cập GitHub, có thể deploy bằng phương án khác tương thích Docker nhưng phải tự cấu hình.
-3. Kiểm tra Blueprint đọc `render.yaml` rồi chọn Deploy. Đây là cấu hình **Free để thử nghiệm**, không thu phí dịch vụ theo giờ của gói paid; lưu ý giới hạn free có thể thay đổi.
-4. Trong phần Environment, nhập bí mật `APP_ACCESS_PASSWORD` **ít nhất 12 ký tự**, KHÔNG đưa vào GitHub. `APP_SESSION_SECRET` được Render tự sinh từ Blueprint. Nếu được nhắc về biến mật khẩu trong lúc tạo Blueprint, hãy nhập trong giao diện Render.
-5. Khi Render báo **Live**, mở URL `https://...onrender.com`. Trang yêu cầu mật khẩu sẽ xuất hiện. Nhập mật khẩu để vào Dashboard / Nhân vật / Storyboard / Node Editor.
-6. Bảo đảm chức năng `Create project`, tải ảnh nhân vật, lưu workflow và dựng clip 16 giây hoạt động. Nếu máy chủ miễn phí thiếu tài nguyên khi dựng, hãy thử clip ngắn và không chạy nhiều việc cùng lúc.
+- Giữ nguyên dịch vụ `ai-film-factory-studio` hiện tại, không cần tạo dịch vụ mới.
+- Render cấu hình Blueprint `main` thường tự deploy sau commit.
+- Nếu chưa tự chạy: Render → dịch vụ → Manual Deploy → Deploy latest commit.
+- Đọc Logs nếu có lỗi; chờ trạng thái `Live` rồi mở URL Render đã cấp.
+- Địa chỉ hiện dùng: `https://ai-film-factory-studio.onrender.com` (chỉ hoạt động sau khi deploy Live).
+- Trình duyệt đôi khi giữ tài nguyên cũ: nhấn Ctrl+Shift+R để làm mới.
 
-**Không sử dụng GitHub Pages cho backend:** GitHub Pages chỉ lưu nội dung tĩnh, không chạy FastAPI, SQLite, FFmpeg. Giao diện và API trong gói này được phục vụ chung bởi Render.
+## 3. Dùng thử không cần API key
 
-## CẢNH BÁO quan trọng: dữ liệu trên Render Free không bền
+Tổng quan → nhập cốt truyện → tạo dự án (bản nháp miễn phí) → tab **Kịch bản**. Trạng thái sẽ ghi `Chưa kết nối API` và không tự phát sinh chi phí. Vào **Nhân vật** để thêm ảnh của phim mới, và **Node Editor** / **Mô phỏng & file** để kiểm tra chức năng cũ.
 
-Với `render.yaml` (plan `free`), thư mục dữ liệu SQLite và các ảnh tải lên nằm trên filesystem tạm thời, có thể **mất hoàn toàn sau restart/redeploy**. Không lưu phim thật hoặc nội dung khó khôi phục trên plan free.
+## 4. Bật AI biên kịch thật (tùy chọn)
 
-Khi cần dữ liệu phim lâu dài, sử dụng **paid Render Starter + Persistent Disk** theo `render.persistent.yaml` (đổi tên/chép nội dung thành `render.yaml` trước khi tạo dịch vụ). Đây là phương án có chi phí và bạn phải tự xem giá ở Render trước khi xác nhận. Tệp dùng `sizeGB: 5` cho bản đầu, có thể cần nâng dung lượng khi xuất nhiều video. Bạn cũng nên sao lưu dự án ngoài dịch vụ. Không đổi blueprint trả phí nếu chưa đồng ý chi phí.
+**Chỉ áp dụng nếu tài khoản và người sử dụng đủ điều kiện sử dụng API của nhà cung cấp.** OpenAI API là dịch vụ tính phí token độc lập với việc sử dụng website hoặc ChatGPT thông thường.
 
-## Giữ bảo mật
+- Vào Render → web service `ai-film-factory-studio` → **Environment**.
+- Thêm `OPENAI_API_KEY` = khóa API riêng của bạn. Không gửi khóa qua chat, không ghi vào repo Public.
+- Có thể thêm `AI_WRITER_MODEL` = tên mô hình được API hỗ trợ; mặc định `gpt-4.1-mini`.
+- Có thể thêm `AI_WRITER_MAX_CALLS` = `12` cho thử nghiệm giới hạn số nhóm gọi API; nếu phim 8 phút cần 9 calls, giá trị nhỏ hơn sẽ chặn trước khi gọi.
+- Lưu để Render restart; vào tab **Kịch bản** kiểm tra `API đã cấu hình`.
+- Lưu cốt truyện, bấm **Viết storyboard bằng AI thật** và xác nhận. Theo dõi tiến độ. Nếu gặp lỗi, bản storyboard cũ không bị ghi đè.
+- Duyệt từng shot, sau đó bấm **Duyệt kịch bản AI**. Trạng thái `approved` chỉ có nghĩa là kịch bản được duyệt; chưa tạo video bằng AI thật.
 
-- Không commit file `.env`, API key, mật khẩu, ảnh nhân vật riêng, video/MP4, database, token.
-- Bản V0.3 không chứa ảnh Mai/Tuấn trong repo công khai; bạn đăng nhập website rồi tải các ảnh đó lên phần **Nhân vật**. Đối với Render Free, ảnh tải lên cũng có thể mất nếu máy chủ khởi động lại.
-- Mật khẩu nên là chuỗi ngẫu nhiên độc lập; gửi riêng qua kênh an toàn cho người cộng tác, không đặt trong URL.
-- Không dùng mật khẩu chung của những dịch vụ khác. Nên thay mật khẩu nếu bị lộ; thay password sẽ vô hiệu hóa cookie cũ sau khi service tải lại cấu hình.
-- Các giới hạn đăng nhập trong RAM chỉ phù hợp MVP một người dùng; khi mở rộng nhiều người cần giải pháp tài khoản từng người, rate limiting tập trung, audit log và lưu trữ riêng.
-- Website có thể bị tìm ra qua link được chia sẻ, log hoặc công cụ tìm kiếm. `robots.txt`/noindex chỉ giảm khả năng lập chỉ mục, **không thay thế đăng nhập**.
+**Chi phí:** một phim 8 phút / 60 shot thường cần 1 yêu cầu dàn ý + 8 yêu cầu phân cảnh, tối đa số lần bị cấu hình giới hạn. Mỗi yêu cầu có giới hạn đầu ra; phí tùy model, số token thực tế. V0.4 chưa đo hoặc giới hạn được tổng tiền USD, nên nên kiểm tra hạn mức API bên nhà cung cấp trước khi bấm.
 
-## Chạy trên Windows nội bộ
+## 5. Giới hạn kiến trúc hiện tại
 
-`START_WINDOWS.bat` vẫn hoạt động như V0.2 (localhost không cần mật khẩu theo mặc định). Không expose cổng này trực tiếp ra Internet. Để kiểm tra đăng nhập cục bộ, đặt các biến `APP_REQUIRE_AUTH=1`, `APP_ACCESS_PASSWORD` và `APP_SESSION_SECRET` trước khi khởi chạy.
+- Blueprint Render `plan: free`. Dữ liệu máy chủ **không bền vững**; deploy/restart có thể xóa toàn bộ bản đã lưu. Không lưu nội dung quan trọng nếu chưa bật persistent storage.
+- `SQLite` + Render Free chỉ phù hợp chạy thử cho một người. Muốn làm bản sản xuất cần thay bằng DB và storage bền vững.
+- Node Editor chỉ mô phỏng, không điều khiển TobyFlow.
+- FFmpeg xuất clip ảnh tĩnh, không tạo video chuyển động hoặc giọng Việt.
+- Người dùng phải có quyền đối với hình ảnh/giọng nói/tài nguyên được đưa vào hệ thống.
 
-## Kiểm thử
+## 6. Xử lý lỗi
 
-```bash
-pip install -r requirements.txt httpx
-python tests/test_studio.py
-APP_MODE=production APP_ACCESS_PASSWORD='example-strong-password-123' APP_SESSION_SECRET='example-super-secret-for-tests-only-123456789' python tests/test_security.py
-```
-
-Trong Windows PowerShell, đặt các biến môi trường với `$env:APP_MODE="production"` etc. Không dùng các secret ví dụ khi triển khai thật.
-
-## Giới hạn của V0.3
-
-- Không tự kết nối TobyFlow, Google Flow, Dolai.video hoặc mô hình trả phí; chưa có giọng nói tiếng Việt tự động.
-- Không có đăng ký nhiều người; một mật khẩu chung truy cập tất cả dự án.
-- Dựng MP4 tốn CPU/RAM và đĩa: chỉ thử preview ngắn trên dịch vụ miễn phí.
-- Không có sao lưu tự động, cần giải pháp lưu bền trước khi lưu dự án thật.
+- `AI chưa kết nối`: chưa thêm `OPENAI_API_KEY`; đây là trạng thái bình thường nếu chỉ dùng mock.
+- `401`/`403` ở AI: key sai hoặc tài khoản không được cấp quyền; kiểm tra API trực tiếp với nhà cung cấp.
+- `429`: chạm giới hạn API; dừng và kiểm tra hạn mức.
+- `Lỗi JSON`: AI trả sai cấu trúc. Hệ thống giữ storyboard cũ; có thể thử lại sau khi kiểm tra hạn mức.
+- `Failed deploy`: Render → service → Logs để lấy dòng `ERROR`; không tạo lại dịch vụ khi chưa biết lỗi.
+- Dữ liệu mất sau khi Render restart: đây là giới hạn Render Free, không phải dữ liệu đã được lưu lâu dài.

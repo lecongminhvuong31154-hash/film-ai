@@ -6,7 +6,7 @@ from copy import deepcopy
 
 ALLOWED_TYPES = {'story', 'character', 'prompt', 'image', 'video', 'download', 'voice', 'render', 'note'}
 CAPABILITIES = {
-    'story': 'Python • trình biên kịch mô phỏng',
+    'story': 'Python • lập shot; AI Writer tùy chọn qua API',
     'character': 'TobyFlow • ảnh tham chiếu (bản thiết kế)',
     'prompt': 'TobyFlow • AI Agent (bản thiết kế)',
     'image': 'TobyFlow • Generate image (bản thiết kế)',
@@ -18,20 +18,24 @@ CAPABILITIES = {
 }
 
 def default_graph(project):
+    """Build a film-specific illustrative graph; no paid provider calls."""
     nodes = [
-        {'id': 'story', 'type': 'story', 'position': {'x': 80, 'y': 190}, 'data': {'label': 'Kịch bản / Shot planner', 'detail': project['title']}},
-        {'id': 'mai', 'type': 'character', 'position': {'x': 80, 'y': 35}, 'data': {'label': 'Mai • ảnh tham chiếu', 'character_id': 'MAI'}},
-        {'id': 'tuan', 'type': 'character', 'position': {'x': 80, 'y': 350}, 'data': {'label': 'Tuấn • ảnh tham chiếu', 'character_id': 'TUAN'}},
-        {'id': 'prompt', 'type': 'prompt', 'position': {'x': 380, 'y': 190}, 'data': {'label': 'AI Agent • tạo prompt', 'detail': 'Mô phỏng offline'}},
-        {'id': 'image', 'type': 'image', 'position': {'x': 680, 'y': 190}, 'data': {'label': 'Generate • ảnh cảnh', 'detail': 'Không gọi AI thật'}},
-        {'id': 'video', 'type': 'video', 'position': {'x': 980, 'y': 190}, 'data': {'label': 'Generate • clip', 'detail': 'Clip FFmpeg giả lập'}},
-        {'id': 'download', 'type': 'download', 'position': {'x': 1280, 'y': 190}, 'data': {'label': 'Download • clip'}},
-        {'id': 'voice', 'type': 'voice', 'position': {'x': 1580, 'y': 35}, 'data': {'label': 'Voice • SRT mock'}},
-        {'id': 'render', 'type': 'render', 'position': {'x': 1880, 'y': 190}, 'data': {'label': 'FFmpeg • MP4'}},
+        {'id':'story','type':'story','position':{'x':80,'y':190},'data':{'label':'Kịch bản / Shot planner','detail':project['title']}},
+        {'id':'prompt','type':'prompt','position':{'x':380,'y':190},'data':{'label':'AI Agent • tạo prompt','detail':'Workflow mô phỏng'}},
+        {'id':'image','type':'image','position':{'x':680,'y':190},'data':{'label':'Generate • ảnh cảnh','detail':'Không gọi AI tạo ảnh'}},
+        {'id':'video','type':'video','position':{'x':980,'y':190},'data':{'label':'Generate • clip','detail':'Clip FFmpeg mô phỏng'}},
+        {'id':'download','type':'download','position':{'x':1280,'y':190},'data':{'label':'Download • clip'}},
+        {'id':'voice','type':'voice','position':{'x':1580,'y':35},'data':{'label':'Voice • SRT mock'}},
+        {'id':'render','type':'render','position':{'x':1880,'y':190},'data':{'label':'FFmpeg • MP4'}}
     ]
-    pairs = [('story','prompt'),('mai','image'),('tuan','image'),('prompt','image'),('image','video'),('video','download'),('download','render'),('voice','render'),('story','voice')]
-    edges = [{'id': 'e-'+a+'-'+b, 'source': a, 'target': b} for a,b in pairs]
-    return {'nodes': nodes, 'edges': edges, 'viewport': {'x': 0, 'y': 0, 'zoom': 0.7}, 'format': 'film-factory-reactflow-v2', 'mock': True}
+    pairs=[('story','prompt'),('prompt','image'),('image','video'),('video','download'),('download','render'),('voice','render'),('story','voice')]
+    for idx,char in enumerate(project.get('characters',[])[:8]):
+        nid='ref_'+str(idx+1)
+        nodes.append({'id':nid,'type':'character','position':{'x':80,'y':35+idx*145},
+                      'data':{'label':char['name']+' • tham chiếu','character_id':char['id']}})
+        pairs.append((nid,'image'))
+    edges=[{'id':'e-'+a+'-'+b,'source':a,'target':b} for a,b in pairs]
+    return {'nodes':nodes,'edges':edges,'viewport':{'x':0,'y':0,'zoom':0.7},'format':'film-factory-reactflow-v2','mock':True}
 
 
 def validate_graph(payload):

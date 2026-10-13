@@ -45,9 +45,25 @@ def init_db():
           costume TEXT NOT NULL DEFAULT '', voice TEXT NOT NULL DEFAULT '',
           image_filename TEXT, created TEXT NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS project_characters (
+          project_id TEXT NOT NULL, id TEXT NOT NULL, name TEXT NOT NULL,
+          role TEXT NOT NULL DEFAULT '', costume TEXT NOT NULL DEFAULT '',
+          voice TEXT NOT NULL DEFAULT '', image_filename TEXT,
+          created TEXT NOT NULL,
+          PRIMARY KEY(project_id,id),
+          FOREIGN KEY(project_id) REFERENCES projects(id)
+        );
         CREATE TABLE IF NOT EXISTS project_workflows (
           project_id TEXT PRIMARY KEY, data TEXT NOT NULL,
           updated TEXT NOT NULL,
           FOREIGN KEY(project_id) REFERENCES projects(id)
         );
         ''')
+
+        # Backward-compatible schema migration for projects and jobs from V0.3.
+        project_columns={row['name'] for row in db.execute('PRAGMA table_info(projects)').fetchall()}
+        if 'script_status' not in project_columns:
+            db.execute("ALTER TABLE projects ADD COLUMN script_status TEXT NOT NULL DEFAULT 'mock'")
+        job_columns={row['name'] for row in db.execute('PRAGMA table_info(jobs)').fetchall()}
+        if 'kind' not in job_columns:
+            db.execute("ALTER TABLE jobs ADD COLUMN kind TEXT NOT NULL DEFAULT 'render'")

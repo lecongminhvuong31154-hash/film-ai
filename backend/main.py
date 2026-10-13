@@ -1,10 +1,11 @@
-"""AI Film Factory MVP API. Offline demo; never calls paid AI providers."""
+"""AI Film Factory V0.4: opt-in AI screenplay, per-project characters, safe mock render."""
 import json
 import os
 import re
 import shutil
 import threading
 import uuid
+import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
@@ -20,8 +21,9 @@ from .story_engine import CHARACTER_DEFAULTS, STORY_DEMO, build_shots, make_work
 from .render import preview_card, render_clip, concat_clips, create_subtitles
 from .workflows import default_graph, validate_graph, execution_order, CAPABILITIES
 from .security import PasswordGate, router as security_router
+from . import ai_writer
 
-app = FastAPI(title="AI Film Factory — Web Studio", version="0.3.0", docs_url=None, redoc_url=None, openapi_url=None)
+app = FastAPI(title="AI Film Factory — Web Studio", version="0.4.0", docs_url=None, redoc_url=None, openapi_url=None)
 app.include_router(security_router)
 app.add_middleware(PasswordGate)
 app.add_middleware(CORSMiddleware,allow_origins=["http://localhost:5173","http://127.0.0.1:5173"],allow_methods=["*"],allow_headers=["*"])
@@ -43,7 +45,7 @@ def read_project(pid):
     if row is None:
         raise HTTPException(404,"Không tìm thấy dự án")
     obj=dict(row)
-    obj['characters']=json.loads(obj['characters'])
+    obj['characters']=project_character_records(pid)
     obj['shots']=json.loads(obj['shots'])
     return obj
 
@@ -85,6 +87,86 @@ def url_for_file(f:Path):
     return '/media/'+f.resolve().relative_to(DATA.resolve()).as_posix()
 
 
+def project_character_records(pid:str, ensure=True):
+    """Per-film characters. On first access, migrate old V0.3 snapshots."""
+    if ensure:
+        with connect() as db:
+            count=db.execute('SELECT COUNT(*) AS n FROM project_characters WHERE project_id=?',(pid,)).fetchone()['n']
+            p=db.execute('SELECT characters FROM projects WHERE id=?',(pid,)).fetchone()
+        if not p:raise HTTPException(404,'Dự án không tồn tại')
+        if not count:
+            try:previous=json.loads(p['characters'])
+            except (ValueError,TypeError):previous=[]
+            for c in previous:
+                if isinstance(c,dict) and c.get('id') and c.get('name'):
+                    upsert_project_character(pid,c,copy_global=True)
+    with connect() as db:
+        rows=db.execute('SELECT * FROM project_characters WHERE project_id=? ORDER BY created,id',(pid,)).fetchall()
+    chars=[]
+    for raw in rows:
+        c=dict(raw)
+        filename=c.pop('image_filename')
+        c.pop('project_id',None)
+        dest=project_dir(pid)/'characters'/(filename or 'missing.png')
+        c['image_url']=(url_for_file(dest)+'?v='+str(dest.stat().st_mtime_ns)) if filename and dest.is_file() else None
+        chars.append(c)
+    return chars
+
+
+def sync_project_cast(pid):
+    with connect() as db:
+        db.execute('UPDATE projects SET characters=?,updated=? WHERE id=?',
+                   (jd(project_character_records(pid,False)),now(),pid))
+
+
+def upsert_project_character(pid,c,copy_global=False):
+    """No cross-film shared mutations; images are copied into film-specific storage."""
+    cid=str(c.get('id',''))[:64]
+    if not cid or not re.fullmatch(r'[A-Za-z0-9_-]{1,64}',cid):
+        raise HTTPException(400,'ID nhân vật không hợp lệ')
+    targetdir=project_dir(pid)/'characters';targetdir.mkdir(exist_ok=True)
+    filename=None
+    with connect() as db:
+        old=db.execute('SELECT image_filename FROM project_characters WHERE project_id=? AND id=?',(pid,cid)).fetchone()
+        if old:filename=old['image_filename']
+    if not filename and copy_global:
+        source=DATA/'characters'/f'{cid}_REF.png'
+        if source.is_file():
+            filename=f'{cid}_REF.png'
+            shutil.copy2(source,targetdir/filename)
+    with connect() as db:
+        db.execute("""INSERT INTO project_characters(project_id,id,name,role,costume,voice,image_filename,created)
+            VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(project_id,id) DO UPDATE SET
+            name=excluded.name,role=excluded.role,costume=excluded.costume,voice=excluded.voice,image_filename=COALESCE(project_characters.image_filename,excluded.image_filename)""",
+            (pid,cid,str(c.get('name',''))[:90],str(c.get('role',''))[:160],str(c.get('costume',''))[:300],str(c.get('voice',''))[:240],filename,now()))
+
+
+def replace_ai_cast(pid,cast):
+    """Preserve user-selected character portraits by name, without crossing project boundaries."""
+    previous=project_character_records(pid)
+    old_by_name={c['name'].casefold():c for c in previous}
+    new_ids=set()
+    for c in cast:
+        new_ids.add(c['id'])
+        matched=old_by_name.get(c['name'].casefold())
+        upsert_project_character(pid,c)
+        if matched and matched.get('image_url'):
+            src=project_dir(pid)/'characters'/f"{matched['id']}_REF.png"
+            # Also support any user-uploaded filename.
+            with connect() as db:
+                row=db.execute('SELECT image_filename FROM project_characters WHERE project_id=? AND id=?',(pid,matched['id'])).fetchone()
+            if row and row['image_filename']:
+                src=project_dir(pid)/'characters'/row['image_filename']
+            dest=project_dir(pid)/'characters'/f"{c['id']}_REF.png"
+            if src.is_file() and src.resolve()!=dest.resolve():shutil.copy2(src,dest)
+            if dest.is_file():
+                with connect() as db:
+                    db.execute('UPDATE project_characters SET image_filename=? WHERE project_id=? AND id=?',(dest.name,pid,c['id']))
+    with connect() as db:
+        db.execute('DELETE FROM project_characters WHERE project_id=? AND id NOT IN ('+(','.join(['?']*len(new_ids)))+')', (pid,*new_ids))
+    sync_project_cast(pid)
+
+
 def seed_characters():
     folder=DATA/'characters';folder.mkdir(exist_ok=True)
     paths={'MAI':ROOT/'assets'/'MAI_REF.png','TUAN':ROOT/'assets'/'TUAN_REF.png'}
@@ -109,7 +191,7 @@ class NewProject(BaseModel):
 
 @app.get('/api/health')
 def health():
-    return {"ok":True,"mode":"offline-mock","provider":"none","credits_used":0,"ffmpeg":"available on render"}
+    return {"ok":True,"mode":"mock-preview+optional-ai-writer","provider":"OpenAI (optional)","credits_used":None if ai_writer.available() else 0,"usage_note":"Chỉ đo mô phỏng; token phí API do nhà cung cấp tính","ffmpeg":"available on render","version":"0.4.0"}
 
 
 @app.get('/api/demo-story')
@@ -193,6 +275,59 @@ async def update_character_image(character_id:str,file:UploadFile=File(...)):
     return {'ok':True,'image_url':url_for_file(dest)}
 
 
+
+@app.get('/api/projects/{project_id}/characters')
+def get_project_characters(project_id:str):
+    read_project(project_id)
+    return project_character_records(project_id)
+
+
+@app.post('/api/projects/{project_id}/characters',status_code=201)
+def add_project_character(project_id:str,payload:CharacterCreate):
+    read_project(project_id)
+    cid='CHAR_'+uuid.uuid4().hex[:8].upper()
+    upsert_project_character(project_id,{'id':cid,**payload.model_dump()})
+    sync_project_cast(project_id)
+    return next(c for c in project_character_records(project_id) if c['id']==cid)
+
+
+@app.patch('/api/projects/{project_id}/characters/{character_id}')
+def edit_project_character(project_id:str,character_id:str,payload:CharacterCreate):
+    read_project(project_id)
+    if not any(c['id']==character_id for c in project_character_records(project_id)):
+        raise HTTPException(404,'Nhân vật không nằm trong dự án')
+    upsert_project_character(project_id,{'id':character_id,**payload.model_dump()})
+    sync_project_cast(project_id)
+    return next(c for c in project_character_records(project_id) if c['id']==character_id)
+
+
+@app.post('/api/projects/{project_id}/characters/{character_id}/image')
+async def upload_project_character_image(project_id:str,character_id:str,file:UploadFile=File(...)):
+    read_project(project_id)
+    if not any(c['id']==character_id for c in project_character_records(project_id)):
+        raise HTTPException(404,'Nhân vật không thuộc dự án')
+    if file.content_type not in ('image/png','image/jpeg','image/webp'):
+        raise HTTPException(400,'Chỉ cho phép PNG/JPEG/WEBP')
+    blob=await file.read(8*1024*1024+1)
+    if len(blob)>8*1024*1024:raise HTTPException(413,'Ảnh vượt quá 8 MB')
+    try:
+        from PIL import Image, ImageOps
+        from io import BytesIO
+        obj=Image.open(BytesIO(blob));obj.verify()
+        obj=ImageOps.exif_transpose(Image.open(BytesIO(blob))).convert('RGB')
+        if obj.width*obj.height>30000000:raise ValueError('Ảnh quá lớn')
+        destdir=project_dir(project_id)/'characters';destdir.mkdir(exist_ok=True)
+        dest=destdir/f'{character_id}_REF.png'
+        obj.save(dest,'PNG')
+    except Exception as exc:
+        raise HTTPException(400,'Không đọc được ảnh hợp lệ') from exc
+    with connect() as db:
+        db.execute('UPDATE project_characters SET image_filename=? WHERE project_id=? AND id=?',
+                   (dest.name,project_id,character_id))
+    sync_project_cast(project_id)
+    return {'ok':True,'image_url':url_for_file(dest)}
+
+
 @app.get('/api/projects')
 def projects():
     with connect() as db:
@@ -204,12 +339,15 @@ def projects():
 def create_project(payload:NewProject):
     pid='film_'+uuid.uuid4().hex[:12]
     shots=build_shots(payload.story,payload.minutes)
-    chars=character_records()
+    is_demo=('lao công' in payload.story.lower() and ('hợp đồng' in payload.story.lower() or '50 tỷ' in payload.story.lower()))
+    chars=character_records()[:2] if is_demo else []
     moment=now()
     with connect() as db:
         db.execute('INSERT INTO projects (id,title,story,minutes,created,updated,status,characters,shots) VALUES(?,?,?,?,?,?,?,?,?)',
                    (pid,payload.title.strip(),payload.story.strip(),payload.minutes,moment,moment,'planned',jd(chars),jd(shots)))
     pd=project_dir(pid)
+    for character in chars:
+        upsert_project_character(pid, character, copy_global=True)
     (pd/'shots.json').write_text(jd(shots),encoding='utf-8')
     (pd/'story.txt').write_text(payload.story,encoding='utf-8')
     return read_project(pid)
@@ -234,6 +372,21 @@ def download_workflow(project_id:str):
     return FileResponse(dest,filename=dest.name,media_type='application/json')
 
 
+@app.get('/api/projects/{project_id}/backup')
+def backup_project(project_id:str):
+    """Download a portable snapshot; important on ephemeral Render Free."""
+    obj=read_project(project_id)
+    basedir=project_dir(project_id)
+    backupdir=DATA/'backups';backupdir.mkdir(exist_ok=True)
+    dest=backupdir/(project_id+'_backup.zip')
+    with zipfile.ZipFile(dest,'w',compression=zipfile.ZIP_DEFLATED,compresslevel=5) as archive:
+        archive.writestr('project.json',json.dumps(obj,ensure_ascii=False,indent=2))
+        for src in basedir.rglob('*'):
+            if src.is_file() and src.resolve().is_relative_to(basedir.resolve()):
+                archive.write(src,'files/'+src.relative_to(basedir).as_posix())
+    return FileResponse(dest,filename=dest.name,media_type='application/zip')
+
+
 @app.get('/api/projects/{project_id}/shots/download')
 def download_shots(project_id:str):
     read_project(project_id)
@@ -254,8 +407,8 @@ def update_project(project_id:str,payload:ProjectUpdate):
     if not payload.regenerate and sum(sh['duration_seconds'] for sh in shots)!=payload.minutes*60:
         raise HTTPException(400,'Nếu thay đổi thời lượng, hãy chọn tạo lại storyboard')
     with connect() as db:
-        db.execute('UPDATE projects SET title=?,story=?,minutes=?,shots=?,updated=?,status=? WHERE id=?',
-                   (payload.title.strip(),payload.story.strip(),payload.minutes,jd(shots),now(),'planned',project_id))
+        db.execute('UPDATE projects SET title=?,story=?,minutes=?,shots=?,updated=?,status=?,script_status=? WHERE id=?',
+                   (payload.title.strip(),payload.story.strip(),payload.minutes,jd(shots),now(),'planned','mock' if payload.regenerate else 'edited',project_id))
     (project_dir(project_id)/'story.txt').write_text(payload.story.strip(),encoding='utf-8')
     (project_dir(project_id)/'shots.json').write_text(jd(shots),encoding='utf-8')
     return read_project(project_id)
@@ -279,7 +432,7 @@ def update_shot(project_id:str,shot_id:str,payload:ShotUpdate):
     shots=project['shots']
     target=next((sh for sh in shots if sh['id']==shot_id),None)
     if target is None:raise HTTPException(404,'Không tìm thấy shot')
-    available={c['id'] for c in character_records()}
+    available={c['id'] for c in project_character_records(project_id)}
     if any(cid not in available for cid in payload.characters):
         raise HTTPException(400,'Shot có nhân vật chưa tồn tại trong thư viện')
     if payload.speaker and payload.speaker not in available:
@@ -367,8 +520,8 @@ def demo_render_job(jid:str, pid:str, max_seconds:int):
         images=folder/'images';clips=folder/'clips'
         images.mkdir(exist_ok=True);clips.mkdir(exist_ok=True)
         with connect() as db:
-            rows=db.execute('SELECT id,image_filename FROM character_library').fetchall()
-        char_paths={c['id']: DATA/'characters'/(c['image_filename'] or 'missing.png') for c in rows}
+            rows=db.execute('SELECT id,image_filename FROM project_characters WHERE project_id=?',(pid,)).fetchall()
+        char_paths={c['id']: project_dir(pid)/'characters'/(c['image_filename'] or 'missing.png') for c in rows}
         step(jid,'characters',current=0,total=len(selected))
         log(jid,'Đã tải kho nhân vật vào tiến trình mô phỏng.')
         clip_files=[]
@@ -400,6 +553,80 @@ def demo_render_job(jid:str, pid:str, max_seconds:int):
         log(jid,'Lỗi: '+str(exc)[:500],'error')
 
 
+
+@app.get('/api/ai-writer/status')
+def writer_status():
+    return ai_writer.config()
+
+
+def ai_write_job(jid:str,pid:str):
+    """Background optional paid call. Save results only when every generated shot validates."""
+    try:
+        step(jid,'ai_outline',status='running')
+        project=read_project(pid)
+        log(jid,'Đang lập kịch bản qua API đã cấu hình; chỉ lưu sau khi hoàn tất mọi shot.')
+        def on_progress(stage,done,total):
+            step(jid,'ai_'+stage,current=done,total=total)
+            log(jid,f'AI biên kịch: {stage} ({done}/{total})')
+        plan,shots=ai_writer.generate_shots(project['story'],project['minutes'],progress=on_progress)
+        # Do not replace newer user edits made during this background operation.
+        with connect() as db:
+            current=db.execute('SELECT story,minutes FROM projects WHERE id=?',(pid,)).fetchone()
+        if not current or current['story'] != project['story'] or current['minutes'] != project['minutes']:
+            raise ai_writer.WriterError('Cốt truyện đã thay đổi khi AI đang viết. Kết quả cũ không được ghi đè.')
+        # Commit once the generated plan has passed validation.
+        replace_ai_cast(pid,plan['characters'])
+        with connect() as db:
+            db.execute('UPDATE projects SET shots=?,script_status=?,status=?,updated=?,final_video=NULL WHERE id=?',
+                       (jd(shots),'ai_draft','script_review',now(),pid))
+        folder=project_dir(pid)
+        (folder/'shots.json').write_text(jd(shots),encoding='utf-8')
+        (folder/'script_outline.json').write_text(jd(plan),encoding='utf-8')
+        step(jid,'review',current=len(shots),total=len(shots),status='complete')
+        log(jid,f'AI đã viết đủ {len(shots)} shot. Cần duyệt kịch bản trước khi sản xuất.','success')
+    except Exception as exc:
+        step(jid,'failed',status='failed',error=str(exc)[:500])
+        log(jid,'AI biên kịch thất bại. Storyboard cũ vẫn được giữ: '+str(exc)[:400],'error')
+
+
+@app.post('/api/projects/{project_id}/ai-script',status_code=202)
+def start_ai_script(project_id:str):
+    read_project(project_id)
+    if not ai_writer.available():
+        raise HTTPException(503,'Chưa cấu hình OPENAI_API_KEY trong Environment của Render. Không chạy AI trả phí.')
+    with state_lock:
+        with connect() as db:
+            active=db.execute("SELECT id FROM jobs WHERE project_id=? AND status IN ('queued','running')",(project_id,)).fetchone()
+            if active:raise HTTPException(409,'Một tác vụ khác đang chạy trong dự án này')
+            jid='writer_'+uuid.uuid4().hex[:12]
+            moment=now()
+            db.execute('INSERT INTO jobs(id,project_id,status,step,preview_seconds,created,updated,kind) VALUES(?,?,?,?,?,?,?,?)',
+                       (jid,project_id,'queued','ai_queued',0,moment,moment,'writer'))
+        executor.submit(ai_write_job,jid,project_id)
+    return read_job(jid)
+
+
+@app.get('/api/projects/{project_id}/ai-job')
+def read_ai_job(project_id:str):
+    read_project(project_id)
+    with connect() as db:
+        row=db.execute("SELECT id FROM jobs WHERE project_id=? AND kind='writer' ORDER BY created DESC LIMIT 1",(project_id,)).fetchone()
+    return read_job(row['id']) if row else None
+
+
+@app.post('/api/projects/{project_id}/approve-script')
+def approve_ai_script(project_id:str):
+    project=read_project(project_id)
+    if project.get('script_status') not in ('ai_draft','approved'):
+        raise HTTPException(409,'Chỉ duyệt storyboard do AI viết thành công. Storyboard mô phỏng chưa đủ nội dung.')
+    shots=project['shots']
+    if not shots or any(not sh.get('action') or not sh.get('image_prompt') or not sh.get('video_prompt') for sh in shots):
+        raise HTTPException(422,'Còn shot thiếu nội dung, chưa thể duyệt')
+    with connect() as db:
+        db.execute('UPDATE projects SET script_status=?,status=?,updated=? WHERE id=?',('approved','script_approved',now(),project_id))
+    return {'ok':True,'script_status':'approved','shot_count':len(shots)}
+
+
 class RenderRequest(BaseModel):
     preview_seconds:int=Field(default=30,ge=4,le=60)
 
@@ -413,8 +640,8 @@ def run_project(project_id:str, req:RenderRequest):
             if active:raise HTTPException(409,'Dự án này đang có tác vụ chạy')
             jid='job_'+uuid.uuid4().hex[:12]
             moment=now()
-            db.execute('INSERT INTO jobs(id,project_id,status,step,preview_seconds,created,updated) VALUES(?,?,?,?,?,?,?)',
-                       (jid,project_id,'queued','queued',req.preview_seconds,moment,moment))
+            db.execute('INSERT INTO jobs(id,project_id,status,step,preview_seconds,created,updated,kind) VALUES(?,?,?,?,?,?,?,?)',
+                       (jid,project_id,'queued','queued',req.preview_seconds,moment,moment,'render'))
         executor.submit(demo_render_job,jid,project_id,req.preview_seconds)
     return read_job(jid)
 
@@ -423,7 +650,7 @@ def run_project(project_id:str, req:RenderRequest):
 def latest_job(project_id:str):
     read_project(project_id)
     with connect() as db:
-        row=db.execute('SELECT id FROM jobs WHERE project_id=? ORDER BY created DESC LIMIT 1',(project_id,)).fetchone()
+        row=db.execute("SELECT id FROM jobs WHERE project_id=? AND kind='render' ORDER BY created DESC LIMIT 1",(project_id,)).fetchone()
     return read_job(row['id']) if row else None
 
 
@@ -437,7 +664,7 @@ def project_artifacts(project_id:str):
     p=read_project(project_id)
     d=project_dir(project_id)
     arts=[]
-    for name in ['preview.mp4','preview_subtitles.srt','shots.json','story.txt','node_workflow_mock_NOT_TOBYFLOW.json','tobyflow_blueprint_NOT_IMPORTABLE.json']:
+    for name in ['script_outline.json','preview.mp4','preview_subtitles.srt','shots.json','story.txt','node_workflow_mock_NOT_TOBYFLOW.json','tobyflow_blueprint_NOT_IMPORTABLE.json']:
         f=d/name
         if f.is_file():arts.append({'name':name,'url':url_for_file(f),'size_bytes':f.stat().st_size})
     for f in sorted((d/'clips').glob('*.mp4')) if (d/'clips').exists() else []:
